@@ -35,13 +35,13 @@ proc getVendorDir*(subdir: string = ""): string =
     Get the application's local dir or a subdirectory of it
 ]#
 proc getAppLocalDir*(subdir: string = ""): string =
-    result = $(appdirs.getDataDir() / paths.Path(percy.name) / paths.Path(subdir))
+    result = getDataDir() / percy.name / subdir
 
 #[
     Get the application's cache dir or a subdirectory of it
 ]#
 proc getAppCacheDir*(subdir: string = ""): string =
-    result = $(appdirs.getCacheDir() / paths.Path(percy.name) / paths.Path(subdir))
+    result = getCacheDir() / percy.name / subdir
 
 #[
     Execute a sequence as a command

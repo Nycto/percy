@@ -40,6 +40,12 @@ let
         description: "The verbosity level of the output"
     )
 
+    CommandForceOpt* = Opt(
+        flag: 'f',
+        name: "force",
+        description: "Force checkouts which may otherwise destroy unsaved work in vendor"
+    )
+
     CommandSkipOpt* = Opt(
         flag: 's',
         name: "skip-resolution",

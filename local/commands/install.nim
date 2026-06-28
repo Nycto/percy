@@ -51,11 +51,7 @@ shape InstallCommand: @[
         opts: @[
             CommandConfigOpt,
             CommandVerbosityOpt,
-            Opt(
-                flag: 'f',
-                name: "force",
-                description: "Force checkouts which may otherwise destroy unsaved work in vendor"
-            )
+            CommandForceOpt
         ]
     )
 ]
