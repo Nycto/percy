@@ -319,7 +319,7 @@ shape FetchCommand: @[
             Opt(
                 flag: 'b',
                 name: "bin-directory",
-                default: "~/.local/bin",
+                default: percy.getAppLocalDir("bin"),
                 description: "Change where the binary links are stored"
             ),
             Opt(

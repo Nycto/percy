@@ -30,6 +30,7 @@ shape UpdateCommand: @[
         opts: @[
             CommandConfigOpt,
             CommandVerbosityOpt,
+            CommandForceOpt,
             Opt(
                 flag: 'n',
                 name: "newest",
@@ -39,11 +40,6 @@ shape UpdateCommand: @[
                 flag: 'p',
                 name: "preserve",
                 description: "Preserve all local files by skipping any mapping operations"
-            ),
-            Opt(
-                flag: 'f',
-                name: "force",
-                description: "Force checkouts which may otherwise destroy unsaved work in vendor"
             )
         ]
     )

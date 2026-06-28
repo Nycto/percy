@@ -23,6 +23,7 @@ begin SetCommand:
 
         let
             skip = parseBool(console.getOpt("skip-resolution"))
+            force = parseBool(console.getOpt("force"))
             setUrl = console.getArg("url")
             setType = console.getArg("type")
             repository = Repository.init(setUrl)
@@ -64,7 +65,7 @@ begin SetCommand:
         this.settings.prepare(force = true, save = false)
 
         if not skip:
-            result = this.resolve()
+            result = this.resolve(false, false, force)
 
         if result == 0:
             this.settings.save()
@@ -84,6 +85,7 @@ shape SetCommand: @[
         opts: @[
             CommandConfigOpt,
             CommandVerbosityOpt,
+            CommandForceOpt,
             CommandSkipOpt,
         ],
         args: @[

@@ -1,5 +1,6 @@
 import
     percy,
+    lib/vcs,
     lib/settings,
     lib/depgraph,
     lib/repository,
@@ -59,24 +60,6 @@ begin Loader:
         else:
             if fileExists(mapFile):
                 removeFile(mapFile)
-
-    method getRepository(targetDir: string): Option[Repository] {. base .} =
-        var
-            error: int
-            output: string
-
-        percy.execIn(
-            ExecHook as (
-                block:
-                    error = percy.execCmdCapture(output, @[
-                        fmt "git remote get-url origin"
-                    ])
-            ),
-            targetDir
-        )
-
-        if error == 0:
-            result = some(this.settings.getRepository(output.strip()))
 
     method getMappedPaths(targetDir: string): OrderedTable[string, string] {. base .} =
         let
@@ -221,55 +204,13 @@ begin Loader:
             error: int
             output: string
             pathList: seq[string]
-            retainDirs: HashSet[string]
             deleteDirs: OrderedSet[string]
             updateDirs: OrderedSet[string]
             createDirs: OrderedSet[string]
-            workTrees: Table[string, WorkTree]
+            targetCommits: Table[string, Commit]
 
         if not this.quiet:
             print "Loading Solution"
-
-        #
-        # Loop through all of our workDirs based commits in the solution and the corresponding
-        # work tree.  Mark directories depending on their state, we can either:
-        # - retain
-        # - create
-        # - update
-        #
-        # Deletes are handled after this as we want to cleanup directories no longer being used.
-        #
-        for commit in solution:
-            let
-                workDir = this.settings.getWorkDir(commit.repository.url)
-                targetDir = getVendorDir(workDir)
-                workTrees = commit.repository.workTrees
-                currentUrl = commit.repository.url
-
-            if not workTrees.hasKey(targetDir):
-                if dirExists(targetDir) and not force:
-                    info fmt "> Skipped '{targetDir}'"
-                    info fmt "> Reason: Working copy is not managed as {currentUrl} (force with -f)"
-                    info fmt "> Hint: Your project may have moved or your cache was cleared"
-                    retainDirs.incl(targetDir)
-                else:
-                    createDirs.incl(targetDir)
-            else:
-                let
-                    branch = workTrees[targetDir].branch
-                    head = workTrees[targetDir].head
-
-                if head == commit.id and not force: # We can just retain the current state if it matches
-                    # info fmt "> Skipped '{targetDir}'"
-                    # info fmt "> Reason: Working copy is already up to date (force with -f)"
-                    retainDirs.incl(targetDir)
-                elif branch.len != 0 and not force: # Someone may be working on something
-                    info fmt "> Skipped '{targetDir}'"
-                    info fmt "> Reason: Explicit branch `{branch}` is in use (force with -f)"
-                    info fmt "> Hint: Use `git checkout -d` in the directory to release the branch"
-                    retainDirs.incl(targetDir)
-                else:
-                    updateDirs.incl(targetDir)
 
         proc hasFile(path: string): bool =
             result = false
@@ -277,63 +218,109 @@ begin Loader:
                 if fileExists(item.path):
                     return true
 
-        proc scanDeletes(dir: string, depth: int = 0): void =
+        proc scanChanges(dir: string, depth: int = 0): void =
             var
                 delCount = 0
                 subCount = 0
+
             for item in walkDir(dir):
+                var
+                    isControlled = false
+                    currentCommit = ""
+                    currentChanges = ""
+                    commonDirectory = ""
+
                 inc subCount
+
                 #
                 # We're only looking for directories
                 #
                 if not dirExists(item.path):
                     continue
-                #
-                # We don't want to touch people's links
-                #
-                if symLinkExists(item.path):
-                    continue
-                #
-                # We don't want to touch any retained directories
-                #
-                if retainDirs.contains(item.path):
-                    continue
+
                 #
                 # At this point, we know the item is a directory and is not being retained.
                 # If it contains no files, we can recursively scan it and continue.
                 #
                 if not hasFile(item.path):
-                    scanDeletes(item.path, depth + 1)
+                    scanChanges(item.path, depth + 1)
                     continue
-                #
-                # The item has files, so we want to determine the nature of it.  If it's a git
-                # repo, we want to exclude it if it has changes.
-                #
-                if dirExists(item.path / ".git"):
-                    percy.execIn(
-                        ExecHook as (
-                            block:
-                                error = percy.execCmdCapture(output, @[
-                                    fmt "git status --porcelain"
-                                ])
-                        ),
-                        item.path
-                    )
 
-                    if error == 0 and output.len > 0 and not force:
-                        info fmt "> Skip: '{item.path}' has unsaved changes (force with -f)"
-                        if updateDirs.contains(item.path):
-                            updateDirs.excl(item.path)
                 #
-                # Finally, if we're not updating the item, just delete it.
+                # We don't want to touch people's links
                 #
-                if not updateDirs.contains(item.path):
-                    deleteDirs.incl(item.path)
-                    inc delCount
+                if not force and symLinkExists(item.path):
+                    info fmt "> Skipped changes to '{item.path}'"
+                    info fmt "> Reason: Linked dependency (force with -f)"
+                    continue
+
+                #
+                # VCS Information
+                #
+                isControlled = vcs.controlled(item.path)
+
+                if isControlled:
+                    currentCommit = vcs.currentHead(item.path)
+                    currentChanges = vcs.currentChanges(item.path)
+                    commonDirectory = vcs.commonDirectory(item.path)
+
+                    if not force and currentChanges.len > 0: # Skip if it has changes.
+                        info fmt "> Skipped changes to '{item.path}'"
+                        info fmt "> Reason: Unsaved changes (force with -f)"
+                        continue
+
+                    if not force and commonDirectory == item.path / ".git": # Skip non-worktrees.
+                        info fmt "> Skipped changes to '{item.path}'"
+                        info fmt "> Reason: Invalid worktree (force with -f)"
+                        continue
+
+                    if targetCommits.hasKey(item.path):
+                        if commonDirectory != targetCommits[item.path].repository.cacheDir:
+                            deleteDirs.incl(item.path) # Delete so it can be recreated
+                            continue
+                        else:
+                            createDirs.excl(item.path) # Remove from create list (already exists)
+                            if currentCommit != targetCommits[item.path].id:
+                                updateDirs.incl(item.path) # Add to updates if commit differs
+                            continue
+
+                elif not force:
+                    info fmt "> Skipped changes to '{item.path}'"
+                    info fmt "> Reason: Uncontrolled directory (force with -f)"
+                    continue
+
+                else:
+                    discard
+
+                #
+                # Delete all remnants not needing to be created
+                #
+                deleteDirs.incl(item.path)
+                inc delCount
+
             if subCount == delCount and depth > 0:
                 deleteDirs.incl(dir)
 
-        scanDeletes(getVendorDir())
+        #
+        # Loop through all commits in our solution:
+        #   - Add their source paths to the export pathList
+        #   - Add their target directories to create dirs for now [scanChanges() will modify]
+        #
+        for commit in solution:
+            let
+                workDir = this.settings.getWorkDir(commit.repository.url)
+                targetDir = getVendorDir(workDir)
+
+            if commit.info.srcDir.len > 0:
+                pathList.add(fmt "{percy.target / workDir / commit.info.srcDir}")
+            else:
+                pathList.add(fmt "{percy.target / workDir}")
+
+            createDirs.incl(targetDir)
+            targetCommits[targetDir] = commit
+
+
+        scanChanges(getVendorDir())
 
         #
         # Report changes
@@ -343,23 +330,18 @@ begin Loader:
         updateDirs = updateDirs.toSeq().sortedByIt(it.len).reversed().toOrderedSet()
         createDirs = createDirs.toSeq().sortedByIt(it.len).reversed().toOrderedSet()
 
-        let
-            hasDeleteDirs = deleteDirs.len > 0
-            hasUpdateDirs = updateDirs.len > 0
-            hasCreateDirs = createDirs.len > 0
-
         if not this.quiet:
-            if hasDeleteDirs or hasUpdateDirs or hasCreateDirs:
+            if deleteDirs.len + updateDirs.len + createDirs.len > 0:
                 print fmt "> Solution: Changes Required"
-                if hasDeleteDirs:
+                if deleteDirs.len > 0:
                     print fmt ">   Delete:"
                     for dir in deleteDirs:
                         print fmt ">     {dir}"
-                if hasUpdateDirs:
+                if updateDirs.len > 0:
                     print fmt ">   Update:"
                     for dir in updateDirs:
                         print fmt ">     {dir}"
-                if hasCreateDirs:
+                if createDirs.len > 0:
                     print fmt ">   Create:"
                     for dir in createDirs:
                         print fmt ">     {dir}"
@@ -373,66 +355,76 @@ begin Loader:
         if not preserve:
             this.openMapFile()
 
-        for deleteDir in deleteDirs:
-            let
-                repository = this.getRepository(deleteDir)
-            if not preserve and isSome(repository):
-                this.removeMappedPaths(repository.get(), deleteDir, true)
-            removeDir(deleteDir)
+        block:
 
-        for commit in solution:
-            let
-                workDir = this.settings.getWorkDir(commit.repository.url)
-                targetDir = getVendorDir(workDir)
-                commitHash = commit.id
-
-            if updateDirs.contains(targetDir):
+            #
+            # DELETES
+            #
+            for deleteDir in deleteDirs:
                 let
-                    repository = this.getRepository(targetDir)
+                    repository = this.settings.getRepository(vcs.origin(deleteDir))
+
+                if repository.cacheExists:
+                    if not preserve:
+                        this.removeMappedPaths(repository, deleteDir, true)
+
+                    discard repository.exec(
+                        @[
+                            fmt "git worktree remove {deleteDir}"
+                        ],
+                        output
+                    )
+
+                removeDir(deleteDir)
+
+            #
+            # UPDATES
+            #
+            for updateDir in updateDirs:
+                let
+                    commit = targetCommits[updateDir]
+                    repository = this.settings.getRepository(vcs.origin(updateDir))
 
                 percy.execIn(
                     ExecHook as (
                         block:
                             error = percy.execCmdCapture(output, @[
-                                fmt "git checkout -q --detach {commitHash}"
+                                fmt "git checkout -q --detach {commit.id}"
                             ])
                     ),
-                    targetDir
+                    updateDir
                 )
 
                 if not preserve:
-                    if isSome(repository):
-                        this.removeMappedPaths(repository.get(), targetDir)
-                    this.createMappedPaths(commit.repository, targetDir)
+                    this.removeMappedPaths(repository, updateDir)
+                    this.createMappedPaths(commit.repository, updateDir)
 
                 result.add(Checkout(
                     commit: commit,
-                    path: targetDir
+                    path: updateDir
                 ))
 
-            elif createDirs.contains(targetDir):
+            #
+            # CREATES
+            #
+            for createDir in createDirs:
+                let
+                    commit = targetCommits[createDir]
+
                 error = commit.repository.exec(
                     @[
-                        fmt "git worktree add -d {targetDir} {commitHash}"
+                        fmt "git worktree add -df {createDir} {commit.id}"
                     ],
                     output
                 )
 
                 if not preserve:
-                    this.createMappedPaths(commit.repository, targetDir)
+                    this.createMappedPaths(commit.repository, createDir)
 
                 result.add(Checkout(
                     commit: commit,
-                    path: targetDir
+                    path: createDir
                 ))
-
-            else:
-                discard
-
-            if commit.info.srcDir.len > 0:
-                pathList.add(fmt "{percy.target / workDir / commit.info.srcDir}")
-            else:
-                pathList.add(fmt "{percy.target / workDir}")
 
         if not preserve:
             this.writeMapFile()

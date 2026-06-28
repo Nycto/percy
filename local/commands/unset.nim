@@ -20,6 +20,7 @@ begin UnsetCommand:
 
         let
             skip = parseBool(console.getOpt("skip-resolution"))
+            force = parseBool(console.getOpt("force"))
             unsetAlias = console.getArg("alias").toLower()
             unsetType = console.getArg("type")
         var
@@ -50,7 +51,7 @@ begin UnsetCommand:
         this.settings.prepare(force = true, save = false)
 
         if not skip:
-            result = this.resolve()
+            result = this.resolve(false, false, force)
 
         if result == 0:
             this.settings.save()
