@@ -1,12 +1,9 @@
 import
     mininim,
     semver,
-    std/appdirs,
     std/re,
     std/osproc,
     nimble/parser
-
-from std/paths import Path, `/`, `$`
 
 export
     mininim,
